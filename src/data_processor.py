@@ -75,7 +75,7 @@ class BillingDataProcessor:
         
         return df
     
-    def calculate_cost_trends(self, df: pd.DataFrame) -> Dict:
+    def calculate_cost_trends(self, df: pd.DataFrame, granularity: str = "DAILY") -> Dict:
         """
         Calculate cost trends and insights
         
@@ -98,21 +98,47 @@ class BillingDataProcessor:
         total_by_period = cost_df.groupby('StartDate')['Amount'].sum().reset_index()
         total_by_period = total_by_period.sort_values('StartDate')
         
+        # Calculate average based on granularity
+        if granularity == "HOURLY":
+            average_label = "average_hourly_cost"
+        elif granularity == "WEEKLY":
+            average_label = "average_weekly_cost"
+        elif granularity == "MONTHLY":
+            average_label = "average_monthly_cost"
+        else:  # DAILY
+            average_label = "average_daily_cost"
+        
         trends = {
             'total_cost': total_by_period['Amount'].sum(),
-            'average_monthly_cost': total_by_period['Amount'].mean(),
+            average_label: total_by_period['Amount'].mean(),
             'periods': len(total_by_period),
-            'cost_by_period': total_by_period.to_dict('records')
+            'cost_by_period': total_by_period.to_dict('records'),
+            'granularity': granularity
         }
         
-        # Calculate month-over-month change if we have multiple periods
+        # Calculate period-over-period change if we have multiple periods
         if len(total_by_period) >= 2:
             current_cost = total_by_period.iloc[-1]['Amount']
             previous_cost = total_by_period.iloc[-2]['Amount']
             
             if previous_cost > 0:
-                mom_change = ((current_cost - previous_cost) / previous_cost) * 100
-                trends['mom_change_percent'] = mom_change
+                period_change = ((current_cost - previous_cost) / previous_cost) * 100
+                
+                # Label the change based on granularity
+                if granularity == "HOURLY":
+                    change_label = "hour_over_hour"
+                elif granularity == "WEEKLY":
+                    change_label = "week_over_week"
+                elif granularity == "MONTHLY":
+                    change_label = "month_over_month"
+                else:  # DAILY
+                    change_label = "day_over_day"
+                
+                trends[f'{change_label}_change_percent'] = period_change
+                trends[f'{change_label}_change_amount'] = current_cost - previous_cost
+                
+                # Keep the old key for backward compatibility
+                trends['mom_change_percent'] = period_change
                 trends['mom_change_amount'] = current_cost - previous_cost
         
         return trends
@@ -220,3 +246,40 @@ class BillingDataProcessor:
             summary['top_service_cost'] = 0
         
         return summary
+    
+    def aggregate_to_weekly(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Aggregate daily data to weekly periods
+        
+        Args:
+            df: DataFrame with daily billing data
+            
+        Returns:
+            pd.DataFrame: Weekly aggregated data
+        """
+        if df.empty:
+            return df
+        
+        # Create a copy to avoid modifying original data
+        weekly_df = df.copy()
+        
+        # Add week start date (Monday of each week)
+        weekly_df['WeekStart'] = weekly_df['StartDate'].dt.to_period('W-MON').dt.start_time
+        
+        # Group by week and service, sum the amounts
+        aggregated = weekly_df.groupby(['WeekStart', 'Service', 'MetricName', 'Unit']).agg({
+            'Amount': 'sum'
+        }).reset_index()
+        
+        # Rename WeekStart back to StartDate for consistency
+        aggregated['StartDate'] = aggregated['WeekStart']
+        aggregated['EndDate'] = aggregated['WeekStart'] + timedelta(days=6)
+        
+        # Drop the temporary WeekStart column
+        aggregated = aggregated.drop('WeekStart', axis=1)
+        
+        # Reorder columns to match original structure
+        column_order = ['StartDate', 'EndDate', 'Service', 'MetricName', 'Amount', 'Unit']
+        aggregated = aggregated[column_order]
+        
+        return aggregated

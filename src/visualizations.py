@@ -26,7 +26,8 @@ class BillingVisualizations:
     def create_cost_trend_chart(
         self,
         df: pd.DataFrame,
-        title: str = "Cost Trends Over Time"
+        title: str = "Cost Trends Over Time",
+        granularity: str = "DAILY"
     ) -> go.Figure:
         """
         Create line chart showing cost trends over time
@@ -50,8 +51,22 @@ class BillingVisualizations:
             color_discrete_sequence=self.color_palette
         )
         
+        # Customize x-axis based on granularity
+        if granularity == "HOURLY":
+            xaxis_title = "Date & Time"
+            date_format = "%Y-%m-%d %H:%M"
+        elif granularity == "WEEKLY":
+            xaxis_title = "Week Starting"
+            date_format = "%Y-%m-%d"
+        elif granularity == "MONTHLY":
+            xaxis_title = "Month"
+            date_format = "%Y-%m"
+        else:  # DAILY
+            xaxis_title = "Date"
+            date_format = "%Y-%m-%d"
+        
         fig.update_layout(
-            xaxis_title="Date",
+            xaxis_title=xaxis_title,
             yaxis_title="Cost (USD)",
             hovermode='x unified',
             showlegend=False
@@ -59,7 +74,7 @@ class BillingVisualizations:
         
         fig.update_traces(
             line=dict(width=3),
-            hovertemplate='<b>%{x}</b><br>Cost: $%{y:,.2f}<extra></extra>'
+            hovertemplate=f'<b>%{{x|{date_format}}}</b><br>Cost: $%{{y:,.2f}}<extra></extra>'
         )
         
         return fig

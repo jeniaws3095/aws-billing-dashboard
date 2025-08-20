@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 from src.aws_client import AWSBillingClient
 from src.data_processor import BillingDataProcessor
 from src.visualizations import BillingVisualizations
-from config.settings import DEFAULT_DAYS_BACK, MAX_DAYS_BACK, TOP_SERVICES_COUNT
+from config.settings import DEFAULT_DAYS_BACK, MAX_DAYS_BACK, TOP_SERVICES_COUNT, GRANULARITY_LIMITS
 
 # Page configuration
 st.set_page_config(
@@ -48,11 +48,11 @@ class BillingDashboard:
             return
         
         # Get user inputs
-        date_range, granularity = self._get_user_inputs()
+        date_range, aws_granularity, display_granularity = self._get_user_inputs()
         
         # Load and process data
         with st.spinner("Loading billing data..."):
-            raw_data = self._load_billing_data(date_range, granularity)
+            raw_data = self._load_billing_data(date_range, aws_granularity)
             
         if not raw_data:
             st.error("No billing data found for the selected period.")
@@ -65,8 +65,12 @@ class BillingDashboard:
             st.warning("No cost data available for the selected period.")
             return
         
+        # Apply weekly aggregation if needed
+        if display_granularity == "WEEKLY":
+            df = self.data_processor.aggregate_to_weekly(df)
+        
         # Render dashboard
-        self._render_dashboard(df)
+        self._render_dashboard(df, display_granularity)
     
     def _render_header(self):
         """Render application header"""
@@ -100,24 +104,57 @@ class BillingDashboard:
     
     def _get_user_inputs(self) -> tuple:
         """Get user inputs from sidebar"""
-        st.sidebar.subheader("📅 Date Range")
+        st.sidebar.subheader("📅 Time Period Filters")
         
-        # Date range selection
-        col1, col2 = st.sidebar.columns(2)
+        # Quick time period selection (like AWS Console)
+        time_period_option = st.sidebar.selectbox(
+            "Quick Select",
+            options=[
+                "Last 7 days",
+                "Last 30 days", 
+                "Last 3 months",
+                "Last 6 months",
+                "Last 12 months",
+                "Custom Range"
+            ],
+            index=1,  # Default to "Last 30 days"
+            help="Choose a predefined time period or select custom range"
+        )
         
-        with col1:
-            start_date = st.date_input(
-                "Start Date",
-                value=datetime.now() - timedelta(days=DEFAULT_DAYS_BACK),
-                max_value=datetime.now() - timedelta(days=1)
-            )
+        # Calculate date range based on selection
+        end_date = datetime.now()
         
-        with col2:
-            end_date = st.date_input(
-                "End Date",
-                value=datetime.now(),
-                max_value=datetime.now()
-            )
+        if time_period_option == "Last 7 days":
+            start_date = end_date - timedelta(days=7)
+        elif time_period_option == "Last 30 days":
+            start_date = end_date - timedelta(days=30)
+        elif time_period_option == "Last 3 months":
+            start_date = end_date - timedelta(days=90)
+        elif time_period_option == "Last 6 months":
+            start_date = end_date - timedelta(days=180)
+        elif time_period_option == "Last 12 months":
+            start_date = end_date - timedelta(days=365)
+        else:  # Custom Range
+            st.sidebar.markdown("**Custom Date Range**")
+            col1, col2 = st.sidebar.columns(2)
+            
+            with col1:
+                start_date = st.date_input(
+                    "Start Date",
+                    value=datetime.now() - timedelta(days=DEFAULT_DAYS_BACK),
+                    max_value=datetime.now() - timedelta(days=1)
+                )
+            
+            with col2:
+                end_date = st.date_input(
+                    "End Date",
+                    value=datetime.now(),
+                    max_value=datetime.now()
+                )
+            
+            # Convert to datetime for consistency
+            start_date = datetime.combine(start_date, datetime.min.time())
+            end_date = datetime.combine(end_date, datetime.min.time())
         
         # Validate date range
         if start_date >= end_date:
@@ -128,43 +165,107 @@ class BillingDashboard:
             st.sidebar.error(f"Date range cannot exceed {MAX_DAYS_BACK} days")
             st.stop()
         
-        # Granularity selection
+        # Granularity selection with smart defaults
         st.sidebar.subheader("📊 Analysis Settings")
-        granularity = st.sidebar.selectbox(
+        
+        # Smart granularity suggestions based on time range
+        days_diff = (end_date - start_date).days
+        
+        if days_diff <= 2:
+            granularity_options = ["HOURLY", "DAILY"]
+            default_granularity = "HOURLY"
+            help_text = "Hourly view recommended for short periods"
+        elif days_diff <= 31:
+            granularity_options = ["HOURLY", "DAILY", "MONTHLY"]
+            default_granularity = "DAILY"
+            help_text = "Daily view recommended for this period"
+        elif days_diff <= 93:
+            granularity_options = ["DAILY", "WEEKLY", "MONTHLY"]
+            default_granularity = "WEEKLY"
+            help_text = "Weekly view recommended for this period"
+        else:
+            granularity_options = ["WEEKLY", "MONTHLY"]
+            default_granularity = "MONTHLY"
+            help_text = "Monthly view recommended for longer periods"
+        
+        # Add weekly option by processing daily data
+        display_options = []
+        actual_granularity_map = {}
+        
+        for option in granularity_options:
+            if option == "WEEKLY":
+                display_options.append("WEEKLY")
+                actual_granularity_map["WEEKLY"] = "DAILY"  # We'll aggregate daily data to weekly
+            else:
+                display_options.append(option)
+                actual_granularity_map[option] = option
+        
+        selected_granularity = st.sidebar.selectbox(
             "Data Granularity",
-            options=["MONTHLY", "DAILY"],
-            help="Choose how to group your cost data"
+            options=display_options,
+            index=display_options.index(default_granularity) if default_granularity in display_options else 0,
+            help=help_text
         )
         
-        return (start_date, end_date), granularity
+        # Get actual AWS API granularity
+        aws_granularity = actual_granularity_map[selected_granularity]
+        
+        # Validate granularity limits
+        max_days_for_granularity = GRANULARITY_LIMITS.get(selected_granularity, 365)
+        if days_diff > max_days_for_granularity:
+            st.sidebar.error(
+                f"⚠️ {selected_granularity} granularity supports maximum {max_days_for_granularity} days. "
+                f"Please select a shorter time period or different granularity."
+            )
+            st.stop()
+        
+        # Display selected period info
+        st.sidebar.info(
+            f"📊 **Selected Period:**\n"
+            f"From: {start_date.strftime('%Y-%m-%d')}\n"
+            f"To: {end_date.strftime('%Y-%m-%d')}\n"
+            f"Duration: {days_diff} days\n"
+            f"Granularity: {selected_granularity}"
+        )
+        
+        return (start_date, end_date), aws_granularity, selected_granularity
     
     @st.cache_data(ttl=3600)  # Cache for 1 hour
-    def _load_billing_data(_self, date_range: tuple, granularity: str) -> dict:
+    def _load_billing_data(_self, date_range: tuple, aws_granularity: str) -> dict:
         """Load billing data from AWS (cached)"""
         start_date, end_date = date_range
         
         return _self.aws_client.get_cost_by_service(
             start_date=start_date.strftime('%Y-%m-%d'),
             end_date=end_date.strftime('%Y-%m-%d'),
-            granularity=granularity
+            granularity=aws_granularity
         )
     
-    def _render_dashboard(self, df: pd.DataFrame):
+    def _render_dashboard(self, df: pd.DataFrame, display_granularity: str = "DAILY"):
         """Render main dashboard content"""
         # Generate summary
         summary = self.data_processor.generate_cost_summary(df)
-        trends = self.data_processor.calculate_cost_trends(df)
+        trends = self.data_processor.calculate_cost_trends(df, display_granularity)
         
         # Display key metrics
         st.subheader("📈 Key Metrics")
         self.visualizations.display_metrics_cards(summary)
         
-        # Add month-over-month change if available
+        # Add period-over-period change if available
         if 'mom_change_percent' in trends:
+            # Dynamic label based on granularity
+            change_labels = {
+                "HOURLY": "Hour-over-Hour Change",
+                "DAILY": "Day-over-Day Change",
+                "WEEKLY": "Week-over-Week Change", 
+                "MONTHLY": "Month-over-Month Change"
+            }
+            change_label = change_labels.get(display_granularity, "Period-over-Period Change")
+            
             col1, col2 = st.columns(2)
             with col1:
                 st.metric(
-                    label="Month-over-Month Change",
+                    label=change_label,
                     value=f"{trends['mom_change_percent']:+.1f}%",
                     delta=f"${trends['mom_change_amount']:+,.2f}"
                 )
@@ -172,10 +273,21 @@ class BillingDashboard:
         st.divider()
         
         # Cost trends chart
-        st.subheader("📊 Cost Trends")
+        granularity_label = {
+            "HOURLY": "Hourly",
+            "DAILY": "Daily", 
+            "WEEKLY": "Weekly",
+            "MONTHLY": "Monthly"
+        }.get(display_granularity, "Daily")
+        
+        st.subheader(f"📊 {granularity_label} Cost Trends")
         if 'cost_by_period' in trends and trends['cost_by_period']:
             trend_df = pd.DataFrame(trends['cost_by_period'])
-            trend_chart = self.visualizations.create_cost_trend_chart(trend_df)
+            trend_chart = self.visualizations.create_cost_trend_chart(
+                trend_df, 
+                title=f"{granularity_label} Cost Trends Over Time",
+                granularity=display_granularity
+            )
             st.plotly_chart(trend_chart, use_container_width=True)
         
         # Service analysis

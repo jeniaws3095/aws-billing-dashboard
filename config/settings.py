@@ -17,6 +17,23 @@ DEFAULT_GROUP_BY = [{"Type": "DIMENSION", "Key": "SERVICE"}]
 DEFAULT_DAYS_BACK = 90
 MAX_DAYS_BACK = 365
 
+# Time Period Filters (like AWS Console)
+TIME_PERIOD_OPTIONS = {
+    "Last 7 days": 7,
+    "Last 30 days": 30,
+    "Last 3 months": 90,
+    "Last 6 months": 180,
+    "Last 12 months": 365
+}
+
+# Granularity Configuration
+GRANULARITY_LIMITS = {
+    "HOURLY": 7,      # Max 7 days for hourly data
+    "DAILY": 365,     # Max 365 days for daily data
+    "WEEKLY": 365,    # Max 365 days for weekly data (processed from daily)
+    "MONTHLY": 365    # Max 365 days for monthly data
+}
+
 # Chart Configuration
 CHART_CONFIG: Dict = {
     "displayModeBar": False,

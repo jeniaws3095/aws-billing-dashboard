@@ -20,6 +20,8 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+cloudformation-ec2-restart/
+
 
 # Virtual environments
 venv/
@@ -34,7 +36,7 @@ ENV/
 *.swp
 *.swo
 *~
-
+.kiro/
 # OS
 .DS_Store
 .DS_Store?
